@@ -1,0 +1,11 @@
+﻿@{
+    ViewData["Title"] = "Subir Excel";
+}
+
+<h2>Subir Excel</h2>
+
+<form asp-action="Subir" method="post" enctype="multipart/form-data">
+    <input type="file" name="archivoExcel" accept=".xlsx" required />
+    <br /><br />
+    <button type="submit" class="btn btn-primary">Subir</button>
+</form>
