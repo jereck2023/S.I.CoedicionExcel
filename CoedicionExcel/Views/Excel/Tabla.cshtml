@@ -43,6 +43,7 @@
     let documentoId = @ViewBag.DocumentoId;
     let versionActual = 0;
     let tabla = null;
+    let conflictoEnProceso = false;
 
     //OBTENER VERSIÓN INICIAL
     async function obtenerVersionInicial() {
@@ -54,18 +55,16 @@
     }
 
     //POLLING 🔁
-    async function verificarCambios() {
+        async function verificarCambios() {
+        if (conflictoEnProceso) return;
+
         try {
             const response = await fetch(`/Excel/ObtenerVersionDocumento?documentoId=${documentoId}`);
             const data = await response.json();
 
             if (data.version !== versionActual) {
                 console.log("Cambio detectado 🚨");
-                //console.log("Versión nueva:", data.version);
-                 await cargarSnapshot();
-                //OPCIÓN SIMPLE (puedes cambiar luego)
-                // location.reload();
-
+                await cargarSnapshot();
                 versionActual = data.version;
             }
 
@@ -145,19 +144,48 @@
                     .catch(() => alert("No se pudo eliminar la columna"));
                 },
 
-                cellEdited: function (cell) {
-                    const fila = cell.getRow().getData();
+                    cellEdited: async function (cell) {
+        if (conflictoEnProceso) return;
 
-                    fetch('/Excel/ActualizarCelda', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            filaId: fila.filaId,
-                            columna: cell.getField(),
-                            valor: cell.getValue() ?? ""
-                        })
-                    });
-                }
+        const fila = cell.getRow().getData();
+
+        try {
+            const response = await fetch('/Excel/ActualizarCelda', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    filaId: fila.filaId,
+                    columna: cell.getField(),
+                    valor: cell.getValue() ?? "",
+                    versionFila: fila.versionFila
+                })
+            });
+
+            const data = await response.json();
+
+            if (response.status === 409 && data.conflicto) {
+                conflictoEnProceso = true;
+
+                alert(data.mensaje);
+
+                await cargarSnapshot();
+
+                conflictoEnProceso = false;
+                return;
+            }
+
+            if (!response.ok) {
+                alert(data.mensaje || "No se pudo guardar");
+                return;
+            }
+
+            fila.versionFila = data.versionFilaNueva;
+
+        } catch (error) {
+            console.error(error);
+            alert("Error al guardar la celda");
+        }
+    }
             }));
 
             columnasConEditor.push({
@@ -277,19 +305,48 @@
                 .catch(() => alert("No se pudo eliminar la columna"));
             },
 
-            cellEdited: function (cell) {
-                const fila = cell.getRow().getData();
+                cellEdited: async function (cell) {
+        if (conflictoEnProceso) return;
 
-                fetch('/Excel/ActualizarCelda', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        filaId: fila.filaId,
-                        columna: cell.getField(),
-                        valor: cell.getValue() ?? ""
-                    })
-                });
+        const fila = cell.getRow().getData();
+
+        try {
+            const response = await fetch('/Excel/ActualizarCelda', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    filaId: fila.filaId,
+                    columna: cell.getField(),
+                    valor: cell.getValue() ?? "",
+                    versionFila: fila.versionFila
+                })
+            });
+
+            const data = await response.json();
+
+            if (response.status === 409 && data.conflicto) {
+                conflictoEnProceso = true;
+
+                alert(data.mensaje);
+
+                await cargarSnapshot();
+
+                conflictoEnProceso = false;
+                return;
             }
+
+            if (!response.ok) {
+                alert(data.mensaje || "No se pudo guardar");
+                return;
+            }
+
+            fila.versionFila = data.versionFilaNueva;
+
+        } catch (error) {
+            console.error(error);
+            alert("Error al guardar la celda");
+        }
+    }
         }));
 
         // ACCIONES
@@ -368,7 +425,8 @@
         });
 
         // INICIAR POLLING
-        setInterval(verificarCambios, 3000);
+        //setInterval(verificarCambios, 3000); //3 seg
+        setInterval(verificarCambios, 10000); //10 seg
 
         window.tablaDebug = tabla;
     });

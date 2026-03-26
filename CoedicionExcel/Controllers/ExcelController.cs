@@ -123,6 +123,7 @@ namespace CoedicionExcel.Controllers
                             ?? new Dictionary<string, object>();
 
                 datos["filaId"] = filaBd.FilaId;
+                datos["versionFila"] = filaBd.VersionFila;
                 filas.Add(datos);
             }
 
@@ -140,19 +141,35 @@ namespace CoedicionExcel.Controllers
         [HttpPost]
         public async Task<IActionResult> ActualizarCelda([FromBody] ActualizarCeldaRequest request)
         {
-            Console.WriteLine("=== ACTUALIZAR CELDA ===");
-
             if (request == null)
-                return BadRequest("Request nulo");
+                return BadRequest(new { conflicto = false, mensaje = "Request nulo" });
 
-            Console.WriteLine($"FilaId: {request.FilaId}");
-            Console.WriteLine($"Columna: {request.Columna}");
-            Console.WriteLine($"Valor: {request.Valor}");
+            if (request.FilaId <= 0 || string.IsNullOrWhiteSpace(request.Columna))
+                return BadRequest(new { conflicto = false, mensaje = "Datos inválidos" });
 
-            var fila = await _context.FilasExcel.FindAsync(request.FilaId);
+            var fila = await _context.FilasExcel
+                .FirstOrDefaultAsync(f => f.FilaId == request.FilaId && f.Activa);
 
             if (fila == null)
-                return NotFound("Fila no encontrada");
+                return NotFound(new { conflicto = false, mensaje = "Fila no encontrada" });
+
+            // DETECCIÓN DE CONFLICTO
+            if (fila.VersionFila != request.VersionFila)
+            {
+                var datosActuales = JsonSerializer.Deserialize<Dictionary<string, string>>(fila.DatosJson)
+                                   ?? new Dictionary<string, string>();
+
+                datosActuales.TryGetValue(request.Columna, out var valorActual);
+
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = "La fila fue modificada por otro usuario. Se recargará para evitar sobrescribir cambios.",
+                    filaId = fila.FilaId,
+                    versionFilaActual = fila.VersionFila,
+                    valorActual = valorActual ?? ""
+                });
+            }
 
             var datos = JsonSerializer.Deserialize<Dictionary<string, string>>(fila.DatosJson)
                         ?? new Dictionary<string, string>();
@@ -160,6 +177,7 @@ namespace CoedicionExcel.Controllers
             datos[request.Columna] = request.Valor ?? "";
 
             fila.DatosJson = JsonSerializer.Serialize(datos);
+            fila.VersionFila++;
 
             var documento = await _context.DocumentosExcel.FindAsync(fila.DocumentoId);
             if (documento != null)
@@ -169,9 +187,13 @@ namespace CoedicionExcel.Controllers
 
             await _context.SaveChangesAsync();
 
-            Console.WriteLine("Guardado correctamente en BD");
-
-            return Ok("Guardado correctamente");
+            return Ok(new
+            {
+                conflicto = false,
+                mensaje = "Guardado correctamente",
+                filaId = fila.FilaId,
+                versionFilaNueva = fila.VersionFila
+            });
         }
 
         [HttpPost]
@@ -248,7 +270,8 @@ namespace CoedicionExcel.Controllers
 
             var respuesta = new Dictionary<string, object>
             {
-                ["filaId"] = nuevaFila.FilaId
+                ["filaId"] = nuevaFila.FilaId,
+                ["versionFila"] = nuevaFila.VersionFila
             };
 
             foreach (var item in datos)
@@ -429,6 +452,7 @@ namespace CoedicionExcel.Controllers
                             ?? new Dictionary<string, object>();
 
                 datos["filaId"] = filaBd.FilaId;
+                datos["versionFila"] = filaBd.VersionFila;
                 filas.Add(datos);
             }
 

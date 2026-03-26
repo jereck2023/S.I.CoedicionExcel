@@ -40,6 +40,9 @@ namespace CoedicionExcel.Data
                 entity.ToTable("FilasExcel");
                 entity.HasKey(e => e.FilaId);
 
+                entity.Property(e => e.VersionFila)
+                      .HasDefaultValue(1);
+
                 entity.HasOne(e => e.Documento)
                       .WithMany(d => d.Filas)
                       .HasForeignKey(e => e.DocumentoId)
