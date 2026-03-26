@@ -50,7 +50,8 @@ namespace CoedicionExcel.Controllers
             var documento = new DocumentoExcel
             {
                 NombreArchivo = archivoExcel.FileName,
-                FechaCarga = DateTime.Now
+                FechaCarga = DateTime.Now,
+                Version = 1
             };
 
             _context.DocumentosExcel.Add(documento);
@@ -135,7 +136,7 @@ namespace CoedicionExcel.Controllers
 
         //INICIO DE METODOS
 
-        //Metodo para crear Endpoint
+        //Metodo para crear Endpoint y ActualizarCelda
         [HttpPost]
         public async Task<IActionResult> ActualizarCelda([FromBody] ActualizarCeldaRequest request)
         {
@@ -160,6 +161,12 @@ namespace CoedicionExcel.Controllers
 
             fila.DatosJson = JsonSerializer.Serialize(datos);
 
+            var documento = await _context.DocumentosExcel.FindAsync(fila.DocumentoId);
+            if (documento != null)
+            {
+                documento.Version++;
+            }
+
             await _context.SaveChangesAsync();
 
             Console.WriteLine("Guardado correctamente en BD");
@@ -181,6 +188,12 @@ namespace CoedicionExcel.Controllers
                 return NotFound("Columna no encontrada");
 
             columna.NombreVisible = request.NombreVisible ?? "";
+
+            var documento = await _context.DocumentosExcel.FindAsync(request.DocumentoId);
+            if (documento != null)
+            {
+                documento.Version++;
+            }
 
             await _context.SaveChangesAsync();
 
@@ -224,6 +237,13 @@ namespace CoedicionExcel.Controllers
             };
 
             _context.FilasExcel.Add(nuevaFila);
+
+            var documento = await _context.DocumentosExcel.FindAsync(request.DocumentoId);
+            if (documento != null)
+            {
+                documento.Version++;
+            }
+
             await _context.SaveChangesAsync();
 
             var respuesta = new Dictionary<string, object>
@@ -251,6 +271,12 @@ namespace CoedicionExcel.Controllers
                 return NotFound("Fila no encontrada");
 
             fila.Activa = false;
+
+            var documento = await _context.DocumentosExcel.FindAsync(fila.DocumentoId);
+            if (documento != null)
+            {
+                documento.Version++;
+            }
 
             await _context.SaveChangesAsync();
 
@@ -299,6 +325,12 @@ namespace CoedicionExcel.Controllers
                 fila.DatosJson = JsonSerializer.Serialize(datos);
             }
 
+            var documento = await _context.DocumentosExcel.FindAsync(request.DocumentoId);
+            if (documento != null)
+            {
+                documento.Version++;
+            }
+
             await _context.SaveChangesAsync();
 
             return Json(new
@@ -325,9 +357,87 @@ namespace CoedicionExcel.Controllers
 
             columna.Activa = false;
 
+            var documento = await _context.DocumentosExcel.FindAsync(request.DocumentoId);
+            if (documento != null)
+            {
+                documento.Version++;
+            }
+
             await _context.SaveChangesAsync();
 
             return Ok("Columna eliminada");
+        }
+
+        //Metodo para obtener version del documento
+        [HttpGet]
+        public async Task<IActionResult> ObtenerVersionDocumento(int documentoId)
+        {
+            if (documentoId <= 0)
+                return BadRequest("Documento inválido");
+
+            var documento = await _context.DocumentosExcel
+                .AsNoTracking()
+                .FirstOrDefaultAsync(d => d.DocumentoId == documentoId);
+
+            if (documento == null)
+                return NotFound("Documento no encontrado");
+
+            return Json(new
+            {
+                version = documento.Version
+            });
+        }
+
+        //Metodo para armar columnas y filas para la vista
+        [HttpGet]
+        public async Task<IActionResult> ObtenerSnapshotDocumento(int documentoId)
+        {
+            if (documentoId <= 0)
+                return BadRequest("Documento inválido");
+
+            var documento = await _context.DocumentosExcel
+                .AsNoTracking()
+                .FirstOrDefaultAsync(d => d.DocumentoId == documentoId);
+
+            if (documento == null)
+                return NotFound("Documento no encontrado");
+
+            var columnas = await _context.ColumnasExcel
+                .AsNoTracking()
+                .Where(c => c.DocumentoId == documentoId && c.Activa)
+                .OrderBy(c => c.Orden)
+                .Select(c => new
+                {
+                    c.ColumnaId,
+                    c.ClaveColumna,
+                    c.NombreVisible,
+                    c.Orden
+                })
+                .ToListAsync();
+
+            var filasBd = await _context.FilasExcel
+                .AsNoTracking()
+                .Where(f => f.DocumentoId == documentoId && f.Activa)
+                .OrderBy(f => f.OrdenFila)
+                .ToListAsync();
+
+            var filas = new List<Dictionary<string, object>>();
+
+            foreach (var filaBd in filasBd)
+            {
+                var datos = JsonSerializer.Deserialize<Dictionary<string, object>>(filaBd.DatosJson)
+                            ?? new Dictionary<string, object>();
+
+                datos["filaId"] = filaBd.FilaId;
+                filas.Add(datos);
+            }
+
+            return Json(new
+            {
+                version = documento.Version,
+                columnas,
+                filas
+            });
         }
 
         //Metodo para descargar Excel
@@ -387,8 +497,6 @@ namespace CoedicionExcel.Controllers
                 tabla.Theme = XLTableTheme.TableStyleMedium2;
             } worksheet.Columns().AdjustToContents(); //Ajustar ancho
 
-            //FIN DE LOS METODOS
-
             using var stream = new MemoryStream();
             workbook.SaveAs(stream);
             stream.Position = 0;
@@ -401,5 +509,6 @@ namespace CoedicionExcel.Controllers
                 nombreArchivo
             );
         }
+            //FIN DE LOS METODOS
     }
 }

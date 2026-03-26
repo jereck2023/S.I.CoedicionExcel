@@ -30,246 +30,91 @@
 
 <button type="button" id="btnAgregarFila" class="btn btn-success mb-3">Agregar fila</button>
 <button type="button" id="btnAgregarColumna" class="btn btn-primary mb-3">Agregar columna</button>
+
 <a href="/Excel/DescargarExcel?documentoId=@documentoId"
    class="btn btn-success mb-3">
     Descargar Excel
 </a>
+
 <div id="tabla-excel" style="margin-top:20px;"></div>
 
 <script>
-    document.addEventListener("DOMContentLoaded", function () {
+    //VARIABLES GLOBALES
+    let documentoId = @ViewBag.DocumentoId;
+    let versionActual = 0;
+    let tabla = null;
 
-        const documentoId = @Html.Raw(documentoIdJson);
-        const columnasBase = @Html.Raw(columnasJson);
-        const filas = @Html.Raw(filasJson);
+    //OBTENER VERSIÓN INICIAL
+    async function obtenerVersionInicial() {
+        const response = await fetch(`/Excel/ObtenerVersionDocumento?documentoId=${documentoId}`);
+        const data = await response.json();
 
-                const columnasConEditor = columnasBase.map(c => ({
-        ...c,
-        editor: "input",
-        headerSort: false,
+        versionActual = data.version;
+        console.log("Versión inicial:", versionActual);
+    }
 
-        titleFormatter: function (cell) {
-        const tituloActual = cell.getColumn().getDefinition().title;
+    //POLLING 🔁
+    async function verificarCambios() {
+        try {
+            const response = await fetch(`/Excel/ObtenerVersionDocumento?documentoId=${documentoId}`);
+            const data = await response.json();
 
-        return `
-            <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
-                <span>${tituloActual}</span>
-                    <button type="button"
-                        class="btn btn-sm btn-outline-danger btn-eliminar-columna"
-                        data-columna="${cell.getColumn().getField()}"
-                        style="padding:2px 6px; font-size:12px;">X</button>
-        </div>
-               `;
-        },
+            if (data.version !== versionActual) {
+                console.log("Cambio detectado 🚨");
+                //console.log("Versión nueva:", data.version);
+                 await cargarSnapshot();
+                //OPCIÓN SIMPLE (puedes cambiar luego)
+                // location.reload();
 
-        headerDblClick: function (e, column) {
-            if (e.target.classList.contains("btn-eliminar-columna")) return;
-
-            const nombreActual = column.getDefinition().title;
-            const nuevoNombre = prompt("Nuevo nombre de columna:", nombreActual);
-
-            if (nuevoNombre === null || nuevoNombre.trim() === "") return;
-
-            column.updateDefinition({
-                title: nuevoNombre
-            });
-
-            fetch('/Excel/ActualizarEncabezado', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    documentoId: documentoId,
-                    columna: column.getField(),
-                    nombreVisible: nuevoNombre
-                })
-            });
-        },
-
-        headerClick: function (e, column) {
-            if (!e.target.classList.contains("btn-eliminar-columna")) return;
-
-            const campo = column.getField();
-
-            if (!confirm(`¿Seguro que deseas eliminar la columna "${column.getDefinition().title}"?`)) {
-                return;
+                versionActual = data.version;
             }
 
-            fetch('/Excel/EliminarColumna', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    documentoId: documentoId,
-                    columna: campo
-                })
-            })
-            .then(async response => {
-                const texto = await response.text();
-                console.log("Eliminar columna STATUS:", response.status);
-                console.log("Eliminar columna RESPUESTA:", texto);
-
-                if (!response.ok) {
-                    throw new Error("No se pudo eliminar la columna");
-                }
-
-                column.delete();
-            })
-            .catch(error => {
-                console.error("ERROR eliminar columna:", error);
-                alert("No se pudo eliminar la columna");
-            });
-        },
-
-        cellEdited: function (cell) {
-            const fila = cell.getRow().getData();
-            const campo = cell.getField();
-            const valor = cell.getValue();
-
-            fetch('/Excel/ActualizarCelda', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    filaId: fila.filaId,
-                    columna: campo,
-                    valor: valor == null ? "" : String(valor)
-                })
-            });
+        } catch (error) {
+            console.error("Error en polling:", error);
         }
-    }));
+    }
 
-        //COLUMNA DE ACCIONES
-        columnasConEditor.push({
-            title: "Acciones",
-            field: "acciones",
-            headerSort: false,
-            formatter: function () {
-                return "<button type='button' class='btn btn-danger btn-sm'>Eliminar</button>";
-            },
-            width: 120,
-            hozAlign: "center",
-            cellClick: function (e, cell) {
-                const fila = cell.getRow().getData();
+    //CARGAR SNAPSHOT
+    async function cargarSnapshot() {
+        try {
+            const response = await fetch(`/Excel/ObtenerSnapshotDocumento?documentoId=${documentoId}`);
+            const data = await response.json();
 
-                if (!confirm("¿Seguro que deseas eliminar esta fila?")) {
-                    return;
-                }
+            console.log("Recargando tabla con snapshot...");
 
-                fetch('/Excel/EliminarFila', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        filaId: fila.filaId
-                    })
-                })
-                .then(async response => {
-                    const texto = await response.text();
-                    console.log("Eliminar STATUS:", response.status);
-                    console.log("Eliminar RESPUESTA:", texto);
-
-                    if (!response.ok) {
-                        throw new Error("No se pudo eliminar la fila");
-                    }
-
-                    cell.getRow().delete();
-                })
-                .catch(error => {
-                    console.error("ERROR eliminar fila:", error);
-                    alert("No se pudo eliminar la fila");
-                });
-            }
-        });
-
-            const tabla = new Tabulator("#tabla-excel", {
-               data: filas,
-               columns: columnasConEditor,
-               layout: "fitColumns",
-               minHeight: "300px",
-               placeholder: "No hay datos para mostrar",
-               headerSort: false
-        });
-
-        //BOTÓN AGREGAR FILA
-        document.getElementById("btnAgregarFila").addEventListener("click", function () {
-            fetch('/Excel/AgregarFila', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    documentoId: documentoId
-                })
-            })
-            .then(async response => {
-                if (!response.ok) {
-                    const texto = await response.text();
-                    throw new Error(texto);
-                }
-
-                return response.json();
-            })
-            .then(nuevaFila => {
-                tabla.addRow(nuevaFila, false);
-            })
-            .catch(error => {
-                console.error("ERROR agregar fila:", error);
-                alert("No se pudo agregar la fila");
-            });
-        });
-
-        //BOTON AGREGAR COLUMNA
-        document.getElementById("btnAgregarColumna").addEventListener("click", function () {
-
-            const nombre = prompt("Nombre de la nueva columna:");
-
-            if (!nombre || nombre.trim() === "") return;
-
-                fetch('/Excel/AgregarColumna', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                documentoId: documentoId,
-                nombre: nombre
-            })
-        })
-        .then(async response => {
-            if (!response.ok) {
-                const texto = await response.text();
-                throw new Error(texto);
-            }
-
-            return response.json();
-        })
-        .then(col => {
-
-            tabla.addColumn({
-                title: col.nombre,
-                field: col.clave,
+            const columnasConEditor = data.columnas.map(c => ({
+                title: c.nombreVisible,
+                field: c.claveColumna,
                 editor: "input",
+                headerSort: false,
+
+                titleFormatter: function (cell) {
+                    const tituloActual = cell.getColumn().getDefinition().title;
+
+                    return `
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+                            <span>${tituloActual}</span>
+                            <button type="button"
+                                class="btn btn-sm btn-outline-danger btn-eliminar-columna"
+                                data-columna="${cell.getColumn().getField()}"
+                                style="padding:2px 6px; font-size:12px;">X</button>
+                        </div>
+                    `;
+                },
 
                 headerDblClick: function (e, column) {
+                    if (e.target.classList.contains("btn-eliminar-columna")) return;
+
                     const nombreActual = column.getDefinition().title;
                     const nuevoNombre = prompt("Nuevo nombre de columna:", nombreActual);
 
-                    if (nuevoNombre === null || nuevoNombre.trim() === "") return;
+                    if (!nuevoNombre || nuevoNombre.trim() === "") return;
 
-                    column.updateDefinition({
-                        title: nuevoNombre
-                    });
+                    column.updateDefinition({ title: nuevoNombre });
 
                     fetch('/Excel/ActualizarEncabezado', {
                         method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             documentoId: documentoId,
                             columna: column.getField(),
@@ -278,34 +123,252 @@
                     });
                 },
 
+                headerClick: function (e, column) {
+                    if (!e.target.classList.contains("btn-eliminar-columna")) return;
+
+                    const campo = column.getField();
+
+                    if (!confirm(`¿Eliminar columna "${column.getDefinition().title}"?`)) return;
+
+                    fetch('/Excel/EliminarColumna', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            documentoId: documentoId,
+                            columna: campo
+                        })
+                    })
+                    .then(async response => {
+                        if (!response.ok) throw new Error();
+                        column.delete();
+                    })
+                    .catch(() => alert("No se pudo eliminar la columna"));
+                },
+
                 cellEdited: function (cell) {
                     const fila = cell.getRow().getData();
-                    const campo = cell.getField();
-                    const valor = cell.getValue();
 
                     fetch('/Excel/ActualizarCelda', {
                         method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             filaId: fila.filaId,
-                            columna: campo,
-                            valor: valor == null ? "" : String(valor)
+                            columna: cell.getField(),
+                            valor: cell.getValue() ?? ""
                         })
                     });
                 }
-            }, true, "acciones");
+            }));
 
-            tabla.redraw(true);
+            columnasConEditor.push({
+                title: "Acciones",
+                field: "acciones",
+                headerSort: false,
+                formatter: () => "<button class='btn btn-danger btn-sm'>Eliminar</button>",
+                width: 120,
+                hozAlign: "center",
 
-            console.log("Columna agregada:", col);
-        })
-        .catch(error => {
-            console.error("ERROR columna:", error);
-            alert("No se pudo agregar la columna");
+                cellClick: function (e, cell) {
+                    const fila = cell.getRow().getData();
+
+                    if (!confirm("¿Eliminar fila?")) return;
+
+                    fetch('/Excel/EliminarFila', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ filaId: fila.filaId })
+                    })
+                    .then(r => {
+                        if (!r.ok) throw new Error();
+                        cell.getRow().delete();
+                    })
+                    .catch(() => alert("No se pudo eliminar"));
+                }
+            });
+
+            if (tabla) {
+                tabla.destroy();
+            }
+
+            tabla = new Tabulator("#tabla-excel", {
+                data: data.filas,
+                columns: columnasConEditor,
+                layout: "fitColumns",
+                minHeight: "300px",
+                placeholder: "No hay datos",
+                headerSort: false
+            });
+
+            versionActual = data.version;
+
+        } catch (error) {
+            console.error("Error al cargar snapshot:", error);
+        }
+    }
+
+    //INICIO
+    document.addEventListener("DOMContentLoaded", async function () {
+
+        await obtenerVersionInicial();
+
+        const documentoIdLocal = @Html.Raw(documentoIdJson);
+        const columnasBase = @Html.Raw(columnasJson);
+        const filas = @Html.Raw(filasJson);
+
+        const columnasConEditor = columnasBase.map(c => ({
+            ...c,
+            editor: "input",
+            headerSort: false,
+
+            titleFormatter: function (cell) {
+                const tituloActual = cell.getColumn().getDefinition().title;
+
+                return `
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+                        <span>${tituloActual}</span>
+                        <button type="button"
+                            class="btn btn-sm btn-outline-danger btn-eliminar-columna"
+                            data-columna="${cell.getColumn().getField()}"
+                            style="padding:2px 6px; font-size:12px;">X</button>
+                    </div>
+                `;
+            },
+
+            headerDblClick: function (e, column) {
+                if (e.target.classList.contains("btn-eliminar-columna")) return;
+
+                const nombreActual = column.getDefinition().title;
+                const nuevoNombre = prompt("Nuevo nombre de columna:", nombreActual);
+
+                if (!nuevoNombre || nuevoNombre.trim() === "") return;
+
+                column.updateDefinition({ title: nuevoNombre });
+
+                fetch('/Excel/ActualizarEncabezado', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        documentoId: documentoIdLocal,
+                        columna: column.getField(),
+                        nombreVisible: nuevoNombre
+                    })
+                });
+            },
+
+            headerClick: function (e, column) {
+                if (!e.target.classList.contains("btn-eliminar-columna")) return;
+
+                const campo = column.getField();
+
+                if (!confirm(`¿Eliminar columna "${column.getDefinition().title}"?`)) return;
+
+                fetch('/Excel/EliminarColumna', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        documentoId: documentoIdLocal,
+                        columna: campo
+                    })
+                })
+                .then(async response => {
+                    if (!response.ok) throw new Error();
+                    column.delete();
+                })
+                .catch(() => alert("No se pudo eliminar la columna"));
+            },
+
+            cellEdited: function (cell) {
+                const fila = cell.getRow().getData();
+
+                fetch('/Excel/ActualizarCelda', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        filaId: fila.filaId,
+                        columna: cell.getField(),
+                        valor: cell.getValue() ?? ""
+                    })
+                });
+            }
+        }));
+
+        // ACCIONES
+        columnasConEditor.push({
+            title: "Acciones",
+            field: "acciones",
+            headerSort: false,
+            formatter: () => "<button class='btn btn-danger btn-sm'>Eliminar</button>",
+            width: 120,
+            hozAlign: "center",
+
+            cellClick: function (e, cell) {
+                const fila = cell.getRow().getData();
+
+                if (!confirm("¿Eliminar fila?")) return;
+
+                fetch('/Excel/EliminarFila', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filaId: fila.filaId })
+                })
+                .then(r => {
+                    if (!r.ok) throw new Error();
+                    cell.getRow().delete();
+                })
+                .catch(() => alert("No se pudo eliminar"));
+            }
         });
-    });
+
+        // TABLA
+        tabla = new Tabulator("#tabla-excel", {
+            data: filas,
+            columns: columnasConEditor,
+            layout: "fitColumns",
+            minHeight: "300px",
+            placeholder: "No hay datos",
+            headerSort: false
+        });
+
+        // AGREGAR FILA
+        document.getElementById("btnAgregarFila").addEventListener("click", function () {
+            fetch('/Excel/AgregarFila', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    documentoId: documentoIdLocal
+                })
+            })
+            .then(r => r.json())
+            .then(f => tabla.addRow(f))
+            .catch(() => alert("Error fila"));
+        });
+
+        // AGREGAR COLUMNA
+        document.getElementById("btnAgregarColumna").addEventListener("click", function () {
+            const nombre = prompt("Nombre columna:");
+            if (!nombre) return;
+
+            fetch('/Excel/AgregarColumna', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    documentoId: documentoIdLocal,
+                    nombre: nombre
+                })
+            })
+            .then(r => r.json())
+            .then(col => {
+                tabla.addColumn({
+                    title: col.nombre,
+                    field: col.clave,
+                    editor: "input"
+                }, true);
+            })
+            .catch(() => alert("Error columna"));
+        });
+
+        // INICIAR POLLING
+        setInterval(verificarCambios, 3000);
 
         window.tablaDebug = tabla;
     });
