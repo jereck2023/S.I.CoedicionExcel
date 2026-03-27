@@ -101,26 +101,49 @@
                     `;
                 },
 
-                headerDblClick: function (e, column) {
-                    if (e.target.classList.contains("btn-eliminar-columna")) return;
+                    headerDblClick: async function (e, column) {
+        if (e.target.classList.contains("btn-eliminar-columna")) return;
+        if (conflictoEnProceso) return;
 
-                    const nombreActual = column.getDefinition().title;
-                    const nuevoNombre = prompt("Nuevo nombre de columna:", nombreActual);
+        const nombreActual = column.getDefinition().title;
+        const nuevoNombre = prompt("Nuevo nombre de columna:", nombreActual);
 
-                    if (!nuevoNombre || nuevoNombre.trim() === "") return;
+        if (!nuevoNombre || nuevoNombre.trim() === "") return;
 
-                    column.updateDefinition({ title: nuevoNombre });
+        try {
+            const response = await fetch('/Excel/ActualizarEncabezado', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    documentoId: documentoId,
+                    columna: column.getField(),
+                    nombreVisible: nuevoNombre,
+                    versionDocumento: versionActual
+                })
+            });
 
-                    fetch('/Excel/ActualizarEncabezado', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            documentoId: documentoId,
-                            columna: column.getField(),
-                            nombreVisible: nuevoNombre
-                        })
-                    });
-                },
+            const data = await response.json();
+
+            if (response.status === 409 && data.conflicto) {
+                conflictoEnProceso = true;
+                alert(data.mensaje);
+                await cargarSnapshot();
+                conflictoEnProceso = false;
+                return;
+            }
+
+            if (!response.ok) {
+                alert(data.mensaje || "No se pudo actualizar el encabezado");
+                return;
+            }
+
+            await column.updateDefinition({ title: nuevoNombre });
+            versionActual = data.versionDocumentoNueva;
+        } catch (error) {
+            console.error(error);
+            alert("Error al actualizar encabezado");
+        }
+    },
 
                 headerClick: function (e, column) {
                     if (!e.target.classList.contains("btn-eliminar-columna")) return;
@@ -129,22 +152,37 @@
 
                     if (!confirm(`¿Eliminar columna "${column.getDefinition().title}"?`)) return;
 
-                    fetch('/Excel/EliminarColumna', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            documentoId: documentoId,
-                            columna: campo
-                        })
+                fetch('/Excel/EliminarColumna', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                    documentoId: documentoIdLocal,
+                    columna: campo,
+                     versionDocumento: versionActual
+                            })
                     })
-                    .then(async response => {
-                        if (!response.ok) throw new Error();
-                        column.delete();
-                    })
-                    .catch(() => alert("No se pudo eliminar la columna"));
+            .then(async response => {
+            const data = await response.json();
+
+            if (response.status === 409 && data.conflicto) {
+            conflictoEnProceso = true;
+            alert(data.mensaje);
+            await cargarSnapshot();
+            conflictoEnProceso = false;
+            return;
+        }
+
+        if (!response.ok) {
+            throw new Error(data.mensaje || "No se pudo eliminar la columna");
+        }
+
+        versionActual = data.versionDocumentoNueva;
+        column.delete();
+    })
+    .catch(() => alert("No se pudo eliminar la columna"));
                 },
 
-                    cellEdited: async function (cell) {
+                     cellEdited: async function (cell) {
         if (conflictoEnProceso) return;
 
         const fila = cell.getRow().getData();
@@ -157,7 +195,8 @@
                     filaId: fila.filaId,
                     columna: cell.getField(),
                     valor: cell.getValue() ?? "",
-                    versionFila: fila.versionFila
+                    versionFila: fila.versionFila,
+                    versionDocumento: versionActual
                 })
             });
 
@@ -165,11 +204,8 @@
 
             if (response.status === 409 && data.conflicto) {
                 conflictoEnProceso = true;
-
                 alert(data.mensaje);
-
                 await cargarSnapshot();
-
                 conflictoEnProceso = false;
                 return;
             }
@@ -180,7 +216,7 @@
             }
 
             fila.versionFila = data.versionFilaNueva;
-
+            versionActual = data.versionDocumentoNueva;
         } catch (error) {
             console.error(error);
             alert("Error al guardar la celda");
@@ -201,16 +237,33 @@
 
                     if (!confirm("¿Eliminar fila?")) return;
 
-                    fetch('/Excel/EliminarFila', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ filaId: fila.filaId })
-                    })
-                    .then(r => {
-                        if (!r.ok) throw new Error();
-                        cell.getRow().delete();
-                    })
-                    .catch(() => alert("No se pudo eliminar"));
+            fetch('/Excel/EliminarFila', {
+                   method: 'POST',
+                   headers: { 'Content-Type': 'application/json' },
+                   body: JSON.stringify({
+                   filaId: fila.filaId,
+                   versionDocumento: versionActual
+                })
+            })
+            .then(async response => {
+            const data = await response.json();
+
+        if (response.status === 409 && data.conflicto) {
+            conflictoEnProceso = true;
+            alert(data.mensaje);
+            await cargarSnapshot();
+            conflictoEnProceso = false;
+            return;
+        }
+
+        if (!response.ok) {
+            throw new Error(data.mensaje || "No se pudo eliminar");
+        }
+
+        versionActual = data.versionDocumentoNueva;
+        cell.getRow().delete();
+        })
+                    .catch(() => alert("No se pudo eliminar"));;
                 }
             });
 
@@ -262,26 +315,49 @@
                 `;
             },
 
-            headerDblClick: function (e, column) {
-                if (e.target.classList.contains("btn-eliminar-columna")) return;
+                headerDblClick: async function (e, column) {
+        if (e.target.classList.contains("btn-eliminar-columna")) return;
+        if (conflictoEnProceso) return;
 
-                const nombreActual = column.getDefinition().title;
-                const nuevoNombre = prompt("Nuevo nombre de columna:", nombreActual);
+        const nombreActual = column.getDefinition().title;
+        const nuevoNombre = prompt("Nuevo nombre de columna:", nombreActual);
 
-                if (!nuevoNombre || nuevoNombre.trim() === "") return;
+        if (!nuevoNombre || nuevoNombre.trim() === "") return;
 
-                column.updateDefinition({ title: nuevoNombre });
+        try {
+            const response = await fetch('/Excel/ActualizarEncabezado', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    documentoId: documentoId,
+                    columna: column.getField(),
+                    nombreVisible: nuevoNombre,
+                    versionDocumento: versionActual
+                })
+            });
 
-                fetch('/Excel/ActualizarEncabezado', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        documentoId: documentoIdLocal,
-                        columna: column.getField(),
-                        nombreVisible: nuevoNombre
-                    })
-                });
-            },
+            const data = await response.json();
+
+            if (response.status === 409 && data.conflicto) {
+                conflictoEnProceso = true;
+                alert(data.mensaje);
+                await cargarSnapshot();
+                conflictoEnProceso = false;
+                return;
+            }
+
+            if (!response.ok) {
+                alert(data.mensaje || "No se pudo actualizar el encabezado");
+                return;
+            }
+
+            await column.updateDefinition({ title: nuevoNombre });
+            versionActual = data.versionDocumentoNueva;
+        } catch (error) {
+            console.error(error);
+            alert("Error al actualizar encabezado");
+        }
+    },
 
             headerClick: function (e, column) {
                 if (!e.target.classList.contains("btn-eliminar-columna")) return;
@@ -294,18 +370,33 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        documentoId: documentoIdLocal,
-                        columna: campo
+                    documentoId: documentoIdLocal,
+                    columna: campo,
+                     versionDocumento: versionActual
+                            })
                     })
-                })
-                .then(async response => {
-                    if (!response.ok) throw new Error();
-                    column.delete();
-                })
-                .catch(() => alert("No se pudo eliminar la columna"));
+            .then(async response => {
+            const data = await response.json();
+
+            if (response.status === 409 && data.conflicto) {
+            conflictoEnProceso = true;
+            alert(data.mensaje);
+            await cargarSnapshot();
+            conflictoEnProceso = false;
+            return;
+        }
+
+        if (!response.ok) {
+            throw new Error(data.mensaje || "No se pudo eliminar la columna");
+        }
+
+        versionActual = data.versionDocumentoNueva;
+        column.delete();
+    })
+    .catch(() => alert("No se pudo eliminar la columna"))
             },
 
-                cellEdited: async function (cell) {
+                    cellEdited: async function (cell) {
         if (conflictoEnProceso) return;
 
         const fila = cell.getRow().getData();
@@ -318,7 +409,8 @@
                     filaId: fila.filaId,
                     columna: cell.getField(),
                     valor: cell.getValue() ?? "",
-                    versionFila: fila.versionFila
+                    versionFila: fila.versionFila,
+                    versionDocumento: versionActual
                 })
             });
 
@@ -326,11 +418,8 @@
 
             if (response.status === 409 && data.conflicto) {
                 conflictoEnProceso = true;
-
                 alert(data.mensaje);
-
                 await cargarSnapshot();
-
                 conflictoEnProceso = false;
                 return;
             }
@@ -341,7 +430,7 @@
             }
 
             fila.versionFila = data.versionFilaNueva;
-
+            versionActual = data.versionDocumentoNueva;
         } catch (error) {
             console.error(error);
             alert("Error al guardar la celda");

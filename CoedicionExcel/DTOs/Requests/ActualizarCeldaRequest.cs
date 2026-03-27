@@ -6,5 +6,6 @@
         public string Columna { get; set; } = string.Empty;
         public string Valor { get; set; } = string.Empty;
         public int VersionFila { get; set; }
+        public int VersionDocumento { get; set; }
     }
 }

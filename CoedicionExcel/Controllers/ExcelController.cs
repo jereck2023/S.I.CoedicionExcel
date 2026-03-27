@@ -151,23 +151,55 @@ namespace CoedicionExcel.Controllers
                 .FirstOrDefaultAsync(f => f.FilaId == request.FilaId && f.Activa);
 
             if (fila == null)
-                return NotFound(new { conflicto = false, mensaje = "Fila no encontrada" });
-
-            // DETECCIÓN DE CONFLICTO
-            if (fila.VersionFila != request.VersionFila)
             {
-                var datosActuales = JsonSerializer.Deserialize<Dictionary<string, string>>(fila.DatosJson)
-                                   ?? new Dictionary<string, string>();
-
-                datosActuales.TryGetValue(request.Columna, out var valorActual);
-
                 return Conflict(new
                 {
                     conflicto = true,
-                    mensaje = "La fila fue modificada por otro usuario. Se recargará para evitar sobrescribir cambios.",
-                    filaId = fila.FilaId,
-                    versionFilaActual = fila.VersionFila,
-                    valorActual = valorActual ?? ""
+                    mensaje = "La fila ya no existe o fue eliminada. Se recargará la vista."
+                });
+            }
+
+            var documento = await _context.DocumentosExcel
+                .FirstOrDefaultAsync(d => d.DocumentoId == fila.DocumentoId);
+
+            if (documento == null)
+            {
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = "El documento ya no está disponible. Se recargará la vista."
+                });
+            }
+
+            var columna = await _context.ColumnasExcel
+                .FirstOrDefaultAsync(c => c.DocumentoId == fila.DocumentoId
+                                       && c.ClaveColumna == request.Columna
+                                       && c.Activa);
+
+            if (columna == null)
+            {
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = "La columna fue eliminada o ya no está disponible. Se recargará la vista."
+                });
+            }
+
+            if (documento.Version != request.VersionDocumento)
+            {
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = "El documento cambió mientras editabas. Se recargará la vista."
+                });
+            }
+
+            if (fila.VersionFila != request.VersionFila)
+            {
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = "La fila fue modificada por otro usuario. Se recargará la vista."
                 });
             }
 
@@ -178,12 +210,7 @@ namespace CoedicionExcel.Controllers
 
             fila.DatosJson = JsonSerializer.Serialize(datos);
             fila.VersionFila++;
-
-            var documento = await _context.DocumentosExcel.FindAsync(fila.DocumentoId);
-            if (documento != null)
-            {
-                documento.Version++;
-            }
+            documento.Version++;
 
             await _context.SaveChangesAsync();
 
@@ -192,7 +219,8 @@ namespace CoedicionExcel.Controllers
                 conflicto = false,
                 mensaje = "Guardado correctamente",
                 filaId = fila.FilaId,
-                versionFilaNueva = fila.VersionFila
+                versionFilaNueva = fila.VersionFila,
+                versionDocumentoNueva = documento.Version
             });
         }
 
@@ -200,26 +228,57 @@ namespace CoedicionExcel.Controllers
         public async Task<IActionResult> ActualizarEncabezado([FromBody] ActualizarEncabezadoRequest request)
         {
             if (request == null)
-                return BadRequest("Request nulo");
+                return BadRequest(new { conflicto = false, mensaje = "Request nulo" });
+
+            if (request.DocumentoId <= 0 || string.IsNullOrWhiteSpace(request.Columna))
+                return BadRequest(new { conflicto = false, mensaje = "Datos inválidos" });
+
+            var documento = await _context.DocumentosExcel
+                .FirstOrDefaultAsync(d => d.DocumentoId == request.DocumentoId);
+
+            if (documento == null)
+            {
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = "El documento ya no está disponible. Se recargará la vista."
+                });
+            }
 
             var columna = await _context.ColumnasExcel
                 .FirstOrDefaultAsync(c => c.DocumentoId == request.DocumentoId
-                                       && c.ClaveColumna == request.Columna);
+                                       && c.ClaveColumna == request.Columna
+                                       && c.Activa);
 
             if (columna == null)
-                return NotFound("Columna no encontrada");
+            {
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = "La columna fue eliminada o ya no está disponible. Se recargará la vista."
+                });
+            }
+
+            if (documento.Version != request.VersionDocumento)
+            {
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = "El documento cambió mientras editabas el encabezado. Se recargará la vista."
+                });
+            }
 
             columna.NombreVisible = request.NombreVisible ?? "";
-
-            var documento = await _context.DocumentosExcel.FindAsync(request.DocumentoId);
-            if (documento != null)
-            {
-                documento.Version++;
-            }
+            documento.Version++;
 
             await _context.SaveChangesAsync();
 
-            return Ok("Encabezado actualizado");
+            return Ok(new
+            {
+                conflicto = false,
+                mensaje = "Encabezado actualizado",
+                versionDocumentoNueva = documento.Version
+            });
         }
 
         [HttpPost]
@@ -286,24 +345,51 @@ namespace CoedicionExcel.Controllers
         public async Task<IActionResult> EliminarFila([FromBody] EliminarFilaRequest request)
         {
             if (request == null || request.FilaId <= 0)
-                return BadRequest("Fila inválida");
+                return BadRequest(new { conflicto = false, mensaje = "Fila inválida" });
 
-            var fila = await _context.FilasExcel.FindAsync(request.FilaId);
+            var fila = await _context.FilasExcel
+                .FirstOrDefaultAsync(f => f.FilaId == request.FilaId && f.Activa);
 
             if (fila == null)
-                return NotFound("Fila no encontrada");
-
-            fila.Activa = false;
+            {
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = "La fila ya no existe o ya fue eliminada. Se recargará la vista."
+                });
+            }
 
             var documento = await _context.DocumentosExcel.FindAsync(fila.DocumentoId);
-            if (documento != null)
+
+            if (documento == null)
             {
-                documento.Version++;
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = "El documento ya no está disponible. Se recargará la vista."
+                });
             }
+
+            if (documento.Version != request.VersionDocumento)
+            {
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = "El documento cambió antes de eliminar la fila. Se recargará la vista."
+                });
+            }
+
+            fila.Activa = false;
+            documento.Version++;
 
             await _context.SaveChangesAsync();
 
-            return Ok("Fila eliminada");
+            return Ok(new
+            {
+                conflicto = false,
+                mensaje = "Fila eliminada",
+                versionDocumentoNueva = documento.Version
+            });
         }
 
         //Metodo para agregar columna
@@ -368,7 +454,18 @@ namespace CoedicionExcel.Controllers
         public async Task<IActionResult> EliminarColumna([FromBody] EliminarColumnaRequest request)
         {
             if (request == null || request.DocumentoId <= 0 || string.IsNullOrWhiteSpace(request.Columna))
-                return BadRequest("Datos inválidos");
+                return BadRequest(new { conflicto = false, mensaje = "Datos inválidos" });
+
+            var documento = await _context.DocumentosExcel.FindAsync(request.DocumentoId);
+
+            if (documento == null)
+            {
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = "El documento ya no está disponible. Se recargará la vista."
+                });
+            }
 
             var columna = await _context.ColumnasExcel
                 .FirstOrDefaultAsync(c => c.DocumentoId == request.DocumentoId
@@ -376,19 +473,34 @@ namespace CoedicionExcel.Controllers
                                        && c.Activa);
 
             if (columna == null)
-                return NotFound("Columna no encontrada");
+            {
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = "La columna ya no existe o ya fue eliminada. Se recargará la vista."
+                });
+            }
+
+            if (documento.Version != request.VersionDocumento)
+            {
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = "El documento cambió antes de eliminar la columna. Se recargará la vista."
+                });
+            }
 
             columna.Activa = false;
-
-            var documento = await _context.DocumentosExcel.FindAsync(request.DocumentoId);
-            if (documento != null)
-            {
-                documento.Version++;
-            }
+            documento.Version++;
 
             await _context.SaveChangesAsync();
 
-            return Ok("Columna eliminada");
+            return Ok(new
+            {
+                conflicto = false,
+                mensaje = "Columna eliminada",
+                versionDocumentoNueva = documento.Version
+            });
         }
 
         //Metodo para obtener version del documento
