@@ -36,6 +36,10 @@
     Descargar Excel
 </a>
 
+<div id="estado-encabezado"
+     style="display:none; margin-top:10px; margin-bottom:10px; padding:10px; border-radius:6px; font-weight:600;">
+</div>
+
 <div id="tabla-excel" style="margin-top:20px;"></div>
 
 <script>
@@ -45,11 +49,15 @@
     let tabla = null;
     let conflictoEnProceso = false;
 
-    // BLOQUE 4
+    // BLOQUE 4 - Bloqueo x fila y Encabezados
     const usuario = prompt("Usuario de prueba:", "User1") || "User1";
     let filaEnEdicionActual = null;
     let intervaloRenovacion = null;
     let filaEditandoVisualmente = null;
+    let yoEditandoEncabezado = false;
+    let intervaloRenovacionEncabezado = null;
+    let encabezadoBloqueado = false;
+    let encabezadoEditadoPor = null;
 
     //INICIO DE FUNCIONES
 
@@ -62,13 +70,36 @@
         console.log("Versión inicial:", versionActual);
     }
 
-    //POLLING 🔁
-                async function verificarCambios() {
-        if (conflictoEnProceso) return;
+        function actualizarEstadoVisualEncabezado() {
+        const divEstado = document.getElementById("estado-encabezado");
+        if (!divEstado) return;
 
-        // Si este usuario está editando una fila, no refrescar la tabla
-        // porque replaceData() cierra el editor visual de Tabulator.
+        if (!encabezadoBloqueado || !encabezadoEditadoPor) {
+            divEstado.style.display = "none";
+            divEstado.textContent = "";
+            divEstado.style.backgroundColor = "";
+            divEstado.style.color = "";
+            return;
+        }
+
+        divEstado.style.display = "block";
+
+        if (encabezadoEditadoPor === usuario) {
+            divEstado.style.backgroundColor = "#e0ffe0";
+            divEstado.style.color = "#1f4d1f";
+            divEstado.textContent = `Estás editando un encabezado`;
+        } else {
+            divEstado.style.backgroundColor = "#ffe0e0";
+            divEstado.style.color = "#7a1f1f";
+            divEstado.textContent = `Encabezado en edición por ${encabezadoEditadoPor}`;
+        }
+    }
+
+    //POLLING 🔁
+        async function verificarCambios() {
+        if (conflictoEnProceso) return;
         if (filaEnEdicionActual) return;
+        if (yoEditandoEncabezado) return;
 
         try {
             await cargarSnapshot();
@@ -82,6 +113,11 @@
         try {
             const response = await fetch(`/Excel/ObtenerSnapshotDocumento?documentoId=${documentoId}`);
             const data = await response.json();
+            
+
+                    encabezadoBloqueado = data.encabezadoEnEdicion;
+                    encabezadoEditadoPor = data.encabezadoEditadoPor;
+                    actualizarEstadoVisualEncabezado();
 
             console.log("Recargando tabla con snapshot...");
 
@@ -91,28 +127,42 @@
                 editor: "input",
                 headerSort: false,
 
-                titleFormatter: function (cell) {
-                    const tituloActual = cell.getColumn().getDefinition().title;
+                        titleFormatter: function (cell) {
+        const tituloActual = cell.getColumn().getDefinition().title;
 
-                    return `
-                        <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
-                            <span>${tituloActual}</span>
-                            <button type="button"
-                                class="btn btn-sm btn-outline-danger btn-eliminar-columna"
-                                data-columna="${cell.getColumn().getField()}"
-                                style="padding:2px 6px; font-size:12px;">X</button>
-                        </div>
-                    `;
-                },
+        return `
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+                <span>${tituloActual}</span>
+                <button type="button"
+                    class="btn btn-sm btn-outline-danger btn-eliminar-columna"
+                    data-columna="${cell.getColumn().getField()}"
+                    style="padding:2px 6px; font-size:12px;">X</button>
+            </div>
+        `;
+    },
 
                     headerDblClick: async function (e, column) {
-        if (e.target.classList.contains("btn-eliminar-columna")) return;
-        if (conflictoEnProceso) return;
+                        if (e.target.classList.contains("btn-eliminar-columna")) return;
+                        if (conflictoEnProceso) return;
 
-        const nombreActual = column.getDefinition().title;
-        const nuevoNombre = prompt("Nuevo nombre de columna:", nombreActual);
+                    const snapshotResponse = await fetch(`/Excel/ObtenerSnapshotDocumento?documentoId=${documentoId}`);
+                    const snapshotData = await snapshotResponse.json();
 
-        if (!nuevoNombre || nuevoNombre.trim() === "") return;
+                        if (snapshotData.encabezadoEnEdicion && snapshotData.encabezadoEditadoPor !== usuario) {
+                        alert(`Hay un encabezado en edición por ${snapshotData.encabezadoEditadoPor}`);
+                        return;
+                        }
+
+                    const ok = await iniciarEdicionEncabezado();
+                        if (!ok) return;
+
+                    const nombreActual = column.getDefinition().title;
+                    const nuevoNombre = prompt("Nuevo nombre de columna:", nombreActual);
+
+                        if (!nuevoNombre || nuevoNombre.trim() === "") {
+                        await liberarEdicionEncabezado();
+                        return;
+                        }
 
         try {
             const response = await fetch('/Excel/ActualizarEncabezado', {
@@ -142,9 +192,11 @@
             }
 
             await column.updateDefinition({ title: nuevoNombre });
+            await liberarEdicionEncabezado();
             versionActual = data.versionDocumentoNueva;
         } catch (error) {
             console.error(error);
+            await liberarEdicionEncabezado();
             alert("Error al actualizar encabezado");
         }
     },
@@ -303,7 +355,7 @@
                 }
             });
 
-                    if (tabla) {
+                      if (tabla) {
         await tabla.replaceData(data.filas);
         tabla.redraw(true);
         versionActual = data.version;
@@ -333,6 +385,7 @@
         headerSort: false
     });
 
+
     versionActual = data.version;
 
         } catch (error) {
@@ -354,28 +407,44 @@
             editor: "input",
             headerSort: false,
 
-            titleFormatter: function (cell) {
-                const tituloActual = cell.getColumn().getDefinition().title;
 
-                return `
-                    <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
-                        <span>${tituloActual}</span>
-                        <button type="button"
-                            class="btn btn-sm btn-outline-danger btn-eliminar-columna"
-                            data-columna="${cell.getColumn().getField()}"
-                            style="padding:2px 6px; font-size:12px;">X</button>
-                    </div>
-                `;
-            },
+    titleFormatter: function (cell) {
+        const tituloActual = cell.getColumn().getDefinition().title;
+
+        return `
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+                <span>${tituloActual}</span>
+                <button type="button"
+                    class="btn btn-sm btn-outline-danger btn-eliminar-columna"
+                    data-columna="${cell.getColumn().getField()}"
+                    style="padding:2px 6px; font-size:12px;">X</button>
+            </div>
+        `;
+    },
+
 
                 headerDblClick: async function (e, column) {
-        if (e.target.classList.contains("btn-eliminar-columna")) return;
-        if (conflictoEnProceso) return;
+                        if (e.target.classList.contains("btn-eliminar-columna")) return;
+                        if (conflictoEnProceso) return;
 
-        const nombreActual = column.getDefinition().title;
-        const nuevoNombre = prompt("Nuevo nombre de columna:", nombreActual);
+                    const snapshotResponse = await fetch(`/Excel/ObtenerSnapshotDocumento?documentoId=${documentoId}`);
+                    const snapshotData = await snapshotResponse.json();
 
-        if (!nuevoNombre || nuevoNombre.trim() === "") return;
+                        if (snapshotData.encabezadoEnEdicion && snapshotData.encabezadoEditadoPor !== usuario) {
+                        alert(`Hay un encabezado en edición por ${snapshotData.encabezadoEditadoPor}`);
+                        return;
+                        }
+
+                    const ok = await iniciarEdicionEncabezado();
+                        if (!ok) return;
+
+                    const nombreActual = column.getDefinition().title;
+                    const nuevoNombre = prompt("Nuevo nombre de columna:", nombreActual);
+
+                        if (!nuevoNombre || nuevoNombre.trim() === "") {
+                        await liberarEdicionEncabezado();
+                        return;
+                        }
 
         try {
             const response = await fetch('/Excel/ActualizarEncabezado', {
@@ -405,9 +474,11 @@
             }
 
             await column.updateDefinition({ title: nuevoNombre });
+            await liberarEdicionEncabezado();
             versionActual = data.versionDocumentoNueva;
         } catch (error) {
             console.error(error);
+            await liberarEdicionEncabezado();
             alert("Error al actualizar encabezado");
         }
     },
@@ -534,22 +605,39 @@
             width: 120,
             hozAlign: "center",
 
-            cellClick: function (e, cell) {
-                const fila = cell.getRow().getData();
+                cellClick: function (e, cell) {
+        const fila = cell.getRow().getData();
 
-                if (!confirm("¿Eliminar fila?")) return;
+        if (!confirm("¿Eliminar fila?")) return;
 
-                fetch('/Excel/EliminarFila', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ filaId: fila.filaId })
-                })
-                .then(r => {
-                    if (!r.ok) throw new Error();
-                    cell.getRow().delete();
-                })
-                .catch(() => alert("No se pudo eliminar"));
+        fetch('/Excel/EliminarFila', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                filaId: fila.filaId,
+                versionDocumento: versionActual
+            })
+        })
+        .then(async response => {
+            const data = await response.json();
+
+            if (response.status === 409 && data.conflicto) {
+                conflictoEnProceso = true;
+                alert(data.mensaje);
+                await cargarSnapshot();
+                conflictoEnProceso = false;
+                return;
             }
+
+            if (!response.ok) {
+                throw new Error(data.mensaje || "No se pudo eliminar");
+            }
+
+            versionActual = data.versionDocumentoNueva;
+            cell.getRow().delete();
+        })
+        .catch(() => alert("No se pudo eliminar"));
+    }
         });
 
         // TABLA
@@ -593,28 +681,28 @@
         });
 
         // AGREGAR COLUMNA
-        document.getElementById("btnAgregarColumna").addEventListener("click", function () {
-            const nombre = prompt("Nombre columna:");
-            if (!nombre) return;
+                document.getElementById("btnAgregarColumna").addEventListener("click", function () {
+        const nombre = prompt("Nombre columna:");
+        if (!nombre) return;
 
-            fetch('/Excel/AgregarColumna', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    documentoId: documentoIdLocal,
-                    nombre: nombre
-                })
+        fetch('/Excel/AgregarColumna', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                documentoId: documentoIdLocal,
+                nombre: nombre
             })
-            .then(r => r.json())
-            .then(col => {
-                tabla.addColumn({
-                    title: col.nombre,
-                    field: col.clave,
-                    editor: "input"
-                }, true);
-            })
-            .catch(() => alert("Error columna"));
-        });
+        })
+        .then(r => r.json())
+        .then(col => {
+            tabla.addColumn({
+                title: col.nombre,
+                field: col.clave,
+                editor: "input"
+            }, true);
+        })
+        .catch(() => alert("Error columna"));
+    });
 
             // =============================
             // BLOQUE 4 - EDICION FILA
@@ -725,19 +813,130 @@
         return ok;
     }
 
-        window.addEventListener("beforeunload", function () {
-        if (!filaEnEdicionActual) return;
+     // =============================
+    // BLOQUE 4 - EDICION ENCABEZADO
+    // =============================
 
-        navigator.sendBeacon(
-            '/Excel/LiberarEdicionFila',
-            new Blob(
-                [JSON.stringify({
-                    filaId: filaEnEdicionActual,
+    async function iniciarEdicionEncabezado() {
+        try {
+            const response = await fetch('/Excel/IniciarEdicionEncabezado', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    documentoId: documentoId,
                     usuario: usuario
-                })],
-                { type: 'application/json' }
-            )
-        );
+                })
+            });
+
+            const data = await response.json();
+
+            if (response.status === 409 && data.bloqueadoPorOtro) {
+                alert(data.mensaje);
+                return false;
+            }
+
+            if (!response.ok) {
+                alert(data.mensaje || "No se pudo iniciar edición de encabezado");
+                return false;
+            }
+
+             yoEditandoEncabezado = true;
+             encabezadoBloqueado = true;
+             encabezadoEditadoPor = usuario;
+             actualizarEstadoVisualEncabezado();
+
+            clearInterval(intervaloRenovacionEncabezado);
+            intervaloRenovacionEncabezado = setInterval(() => {
+                renovarEdicionEncabezado();
+            }, 5000);
+
+            return true;
+        } catch (error) {
+            console.error(error);
+            return false;
+        }
+    }
+
+    async function renovarEdicionEncabezado() {
+        try {
+            const response = await fetch('/Excel/RenovarEdicionEncabezado', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    documentoId: documentoId,
+                    usuario: usuario
+                })
+            });
+
+            if (!response.ok) {
+                clearInterval(intervaloRenovacionEncabezado);
+                intervaloRenovacionEncabezado = null;
+                yoEditandoEncabezado = false;
+                encabezadoBloqueado = false;
+                encabezadoEditadoPor = null;
+                actualizarEstadoVisualEncabezado();
+            }
+        } catch (error) {
+            console.error("Error renovando encabezado", error);
+            clearInterval(intervaloRenovacionEncabezado);
+            intervaloRenovacionEncabezado = null;
+            yoEditandoEncabezado = false;
+            encabezadoBloqueado = false;
+            encabezadoEditadoPor = null;
+            actualizarEstadoVisualEncabezado();
+        }
+    }
+
+    async function liberarEdicionEncabezado() {
+            if (!yoEditandoEncabezado) return;
+
+            clearInterval(intervaloRenovacionEncabezado);
+            intervaloRenovacionEncabezado = null;
+            yoEditandoEncabezado = false;
+            encabezadoBloqueado = false;
+            encabezadoEditadoPor = null;
+            actualizarEstadoVisualEncabezado();
+
+        try {
+            await fetch('/Excel/LiberarEdicionEncabezado', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    documentoId: documentoId,
+                    usuario: usuario
+                })
+            });
+        } catch (error) {
+            console.error(error);
+        }
+    }
+
+            window.addEventListener("beforeunload", function () {
+        if (filaEnEdicionActual) {
+            navigator.sendBeacon(
+                '/Excel/LiberarEdicionFila',
+                new Blob(
+                    [JSON.stringify({
+                        filaId: filaEnEdicionActual,
+                        usuario: usuario
+                    })],
+                    { type: 'application/json' }
+                )
+            );
+        }
+
+        if (yoEditandoEncabezado) {
+            navigator.sendBeacon(
+                '/Excel/LiberarEdicionEncabezado',
+                new Blob(
+                    [JSON.stringify({
+                        documentoId: documentoId,
+                        usuario: usuario
+                    })],
+                    { type: 'application/json' }
+                )
+            );
+        }
     });
 
         // INICIAR POLLING

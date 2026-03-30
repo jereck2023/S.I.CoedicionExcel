@@ -490,7 +490,8 @@ namespace CoedicionExcel.Controllers
             if (request == null || request.DocumentoId <= 0 || string.IsNullOrWhiteSpace(request.Columna))
                 return BadRequest(new { conflicto = false, mensaje = "Datos inválidos" });
 
-            var documento = await _context.DocumentosExcel.FindAsync(request.DocumentoId);
+            var documento = await _context.DocumentosExcel
+                .FirstOrDefaultAsync(d => d.DocumentoId == request.DocumentoId);
 
             if (documento == null)
             {
@@ -498,6 +499,53 @@ namespace CoedicionExcel.Controllers
                 {
                     conflicto = true,
                     mensaje = "El documento ya no está disponible. Se recargará la vista."
+                });
+            }
+
+            // Liberar lock de encabezado si expiró
+            if (LockEncabezadoExpirado(documento))
+            {
+                LiberarLockEncabezado(documento);
+                await _context.SaveChangesAsync();
+            }
+
+            // Bloquear si hay encabezado en edición
+            if (documento.EncabezadoEnEdicion)
+            {
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = $"No se puede eliminar la columna porque hay un encabezado en edición por {documento.EncabezadoEditadoPor ?? "otro usuario"}."
+                });
+            }
+
+            // Revisar filas en edición del documento
+            var filasEnEdicion = await _context.FilasExcel
+                .Where(f => f.DocumentoId == request.DocumentoId && f.Activa && f.EnEdicion)
+                .ToListAsync();
+
+            bool huboCambiosPorTimeout = false;
+
+            foreach (var fila in filasEnEdicion)
+            {
+                if (LockFilaExpirado(fila))
+                {
+                    LiberarLockFila(fila);
+                    huboCambiosPorTimeout = true;
+                }
+            }
+
+            if (huboCambiosPorTimeout)
+                await _context.SaveChangesAsync();
+
+            var filaActivaEnEdicion = filasEnEdicion.FirstOrDefault(f => f.EnEdicion);
+
+            if (filaActivaEnEdicion != null)
+            {
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = $"No se puede eliminar la columna porque la fila {filaActivaEnEdicion.FilaId} está en edición por {filaActivaEnEdicion.EditadoPor ?? "otro usuario"}."
                 });
             }
 
@@ -609,7 +657,9 @@ namespace CoedicionExcel.Controllers
             {
                 version = documento.Version,
                 columnas,
-                filas
+                filas,
+                encabezadoEnEdicion = documento.EncabezadoEnEdicion,
+                encabezadoEditadoPor = documento.EncabezadoEditadoPor
             });
         }
 
