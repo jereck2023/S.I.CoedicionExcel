@@ -45,6 +45,14 @@
     let tabla = null;
     let conflictoEnProceso = false;
 
+    // BLOQUE 4
+    const usuario = prompt("Usuario de prueba:", "User1") || "User1";
+    let filaEnEdicionActual = null;
+    let intervaloRenovacion = null;
+    let filaEditandoVisualmente = null;
+
+    //INICIO DE FUNCIONES
+
     //OBTENER VERSIÓN INICIAL
     async function obtenerVersionInicial() {
         const response = await fetch(`/Excel/ObtenerVersionDocumento?documentoId=${documentoId}`);
@@ -55,19 +63,15 @@
     }
 
     //POLLING 🔁
-        async function verificarCambios() {
+                async function verificarCambios() {
         if (conflictoEnProceso) return;
 
+        // Si este usuario está editando una fila, no refrescar la tabla
+        // porque replaceData() cierra el editor visual de Tabulator.
+        if (filaEnEdicionActual) return;
+
         try {
-            const response = await fetch(`/Excel/ObtenerVersionDocumento?documentoId=${documentoId}`);
-            const data = await response.json();
-
-            if (data.version !== versionActual) {
-                console.log("Cambio detectado 🚨");
-                await cargarSnapshot();
-                versionActual = data.version;
-            }
-
+            await cargarSnapshot();
         } catch (error) {
             console.error("Error en polling:", error);
         }
@@ -182,23 +186,50 @@
     .catch(() => alert("No se pudo eliminar la columna"));
                 },
 
-                     cellEdited: async function (cell) {
-        if (conflictoEnProceso) return;
-
+                    cellEditing: async function (cell) {
         const fila = cell.getRow().getData();
 
-        try {
-            const response = await fetch('/Excel/ActualizarCelda', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    filaId: fila.filaId,
-                    columna: cell.getField(),
-                    valor: cell.getValue() ?? "",
-                    versionFila: fila.versionFila,
-                    versionDocumento: versionActual
-                })
-            });
+        if (fila.enEdicion && fila.editadoPor !== usuario) {
+            alert(`Fila en edición por ${fila.editadoPor}`);
+            cell.cancelEdit();
+            return;
+        }
+
+        const ok = await cambiarFilaEnEdicion(fila.filaId);
+
+        if (!ok) {
+            cell.cancelEdit();
+            return;
+        }
+
+        filaEditandoVisualmente = fila.filaId;
+    },
+
+        cellEditCancelled: async function (cell) {
+        const fila = cell.getRow().getData();
+
+        if (filaEnEdicionActual === fila.filaId) {
+            await liberarEdicionFila();
+        }
+    },
+                
+              cellEdited: async function (cell) {
+                if (conflictoEnProceso) return;
+
+                const fila = cell.getRow().getData();
+
+                try {
+                    const response = await fetch('/Excel/ActualizarCelda', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        filaId: fila.filaId,
+                        columna: cell.getField(),
+                        valor: cell.getValue() ?? "",
+                        versionFila: fila.versionFila,
+                        versionDocumento: versionActual
+                    })
+                });
 
             const data = await response.json();
 
@@ -217,6 +248,11 @@
 
             fila.versionFila = data.versionFilaNueva;
             versionActual = data.versionDocumentoNueva;
+            fila.enEdicion = false;
+            fila.editadoPor = null;
+
+                await liberarEdicionFila();
+
         } catch (error) {
             console.error(error);
             alert("Error al guardar la celda");
@@ -267,20 +303,37 @@
                 }
             });
 
-            if (tabla) {
-                tabla.destroy();
+                    if (tabla) {
+        await tabla.replaceData(data.filas);
+        tabla.redraw(true);
+        versionActual = data.version;
+        return;
+    }
+
+    tabla = new Tabulator("#tabla-excel", {
+        data: data.filas,
+        columns: columnasConEditor,
+        rowFormatter: function(row) {
+            const data = row.getData();
+            const el = row.getElement();
+
+            el.style.backgroundColor = "";
+
+            if (data.enEdicion && data.editadoPor !== usuario) {
+                el.style.backgroundColor = "#ffe0e0";
             }
 
-            tabla = new Tabulator("#tabla-excel", {
-                data: data.filas,
-                columns: columnasConEditor,
-                layout: "fitColumns",
-                minHeight: "300px",
-                placeholder: "No hay datos",
-                headerSort: false
-            });
+            if (data.enEdicion && data.editadoPor === usuario) {
+                el.style.backgroundColor = "#e0ffe0";
+            }
+        },
+        layout: "fitColumns",
+        minHeight: "300px",
+        placeholder: "No hay datos",
+        headerSort: false
+    });
 
-            versionActual = data.version;
+    versionActual = data.version;
 
         } catch (error) {
             console.error("Error al cargar snapshot:", error);
@@ -396,23 +449,51 @@
     .catch(() => alert("No se pudo eliminar la columna"))
             },
 
-                    cellEdited: async function (cell) {
-        if (conflictoEnProceso) return;
-
+                    cellEditing: async function (cell) {
         const fila = cell.getRow().getData();
 
-        try {
-            const response = await fetch('/Excel/ActualizarCelda', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    filaId: fila.filaId,
-                    columna: cell.getField(),
-                    valor: cell.getValue() ?? "",
-                    versionFila: fila.versionFila,
-                    versionDocumento: versionActual
-                })
-            });
+        if (fila.enEdicion && fila.editadoPor !== usuario) {
+            alert(`Fila en edición por ${fila.editadoPor}`);
+            cell.cancelEdit();
+            return;
+        }
+
+        const ok = await cambiarFilaEnEdicion(fila.filaId);
+
+        if (!ok) {
+            cell.cancelEdit();
+            return;
+        }
+
+        filaEditandoVisualmente = fila.filaId;
+    },
+
+        cellEditCancelled: async function (cell) {
+        const fila = cell.getRow().getData();
+
+        if (filaEnEdicionActual === fila.filaId) {
+            await liberarEdicionFila();
+        }
+    },
+
+            
+               cellEdited: async function (cell) {
+                if (conflictoEnProceso) return;
+
+                const fila = cell.getRow().getData();
+
+                try {
+                    const response = await fetch('/Excel/ActualizarCelda', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        filaId: fila.filaId,
+                        columna: cell.getField(),
+                        valor: cell.getValue() ?? "",
+                        versionFila: fila.versionFila,
+                        versionDocumento: versionActual,
+                    })
+                });
 
             const data = await response.json();
 
@@ -431,6 +512,12 @@
 
             fila.versionFila = data.versionFilaNueva;
             versionActual = data.versionDocumentoNueva;
+            fila.enEdicion = false;
+            fila.editadoPor = null;
+
+
+                await liberarEdicionFila();
+
         } catch (error) {
             console.error(error);
             alert("Error al guardar la celda");
@@ -469,6 +556,22 @@
         tabla = new Tabulator("#tabla-excel", {
             data: filas,
             columns: columnasConEditor,
+
+                rowFormatter: function(row) {
+        const data = row.getData();
+        const el = row.getElement();
+
+        el.style.backgroundColor = "";
+
+        if (data.enEdicion && data.editadoPor !== usuario) {
+            el.style.backgroundColor = "#ffe0e0";
+        }
+
+        if (data.enEdicion && data.editadoPor === usuario) {
+            el.style.backgroundColor = "#e0ffe0";
+        }
+    },
+
             layout: "fitColumns",
             minHeight: "300px",
             placeholder: "No hay datos",
@@ -512,6 +615,130 @@
             })
             .catch(() => alert("Error columna"));
         });
+
+            // =============================
+            // BLOQUE 4 - EDICION FILA
+            // =============================
+
+            async function iniciarEdicionFila(filaId) {
+                try {
+                    const response = await fetch('/Excel/IniciarEdicionFila', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                        filaId: filaId,
+                        usuario: usuario
+                    })
+                });
+
+            const data = await response.json();
+
+            if (response.status === 409 && data.bloqueadoPorOtro) {
+                alert(data.mensaje);
+                return false;
+            }
+
+            if (!response.ok) {
+                alert(data.mensaje || "No se pudo iniciar edición");
+                return false;
+            }
+
+            filaEnEdicionActual = filaId;
+
+            // 🔁 Heartbeat cada 5s
+            intervaloRenovacion = setInterval(() => {
+                renovarEdicionFila(filaId);
+            }, 5000);
+
+            return true;
+
+        } catch (error) {
+            console.error(error);
+            return false;
+        }
+    }
+
+                async function renovarEdicionFila(filaId) {
+        try {
+            const response = await fetch('/Excel/RenovarEdicionFila', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    filaId: filaId,
+                    usuario: usuario
+                })
+            });
+
+            if (!response.ok) {
+                clearInterval(intervaloRenovacion);
+                intervaloRenovacion = null;
+                filaEnEdicionActual = null;
+                return;
+            }
+
+        } catch (error) {
+            console.error("Error renovando edición", error);
+            clearInterval(intervaloRenovacion);
+            intervaloRenovacion = null;
+            filaEnEdicionActual = null;
+        }
+    }
+
+                async function liberarEdicionFila() {
+        if (!filaEnEdicionActual) return;
+
+        const filaIdALiberar = filaEnEdicionActual;
+
+        clearInterval(intervaloRenovacion);
+        intervaloRenovacion = null;
+        filaEnEdicionActual = null;
+        filaEditandoVisualmente = null;
+
+        try {
+            await fetch('/Excel/LiberarEdicionFila', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    filaId: filaIdALiberar,
+                    usuario: usuario
+                })
+            });
+        } catch (error) {
+            console.error(error);
+        }
+    }
+
+        async function cambiarFilaEnEdicion(nuevaFilaId) {
+        if (filaEnEdicionActual && filaEnEdicionActual !== nuevaFilaId) {
+            await liberarEdicionFila();
+        }
+
+        if (filaEnEdicionActual === nuevaFilaId) {
+            return true;
+        }
+
+        const ok = await iniciarEdicionFila(nuevaFilaId);
+        if (ok) {
+            filaEditandoVisualmente = nuevaFilaId;
+        }
+
+        return ok;
+    }
+
+        window.addEventListener("beforeunload", function () {
+        if (!filaEnEdicionActual) return;
+
+        navigator.sendBeacon(
+            '/Excel/LiberarEdicionFila',
+            new Blob(
+                [JSON.stringify({
+                    filaId: filaEnEdicionActual,
+                    usuario: usuario
+                })],
+                { type: 'application/json' }
+            )
+        );
+    });
 
         // INICIAR POLLING
         //setInterval(verificarCambios, 3000); //3 seg

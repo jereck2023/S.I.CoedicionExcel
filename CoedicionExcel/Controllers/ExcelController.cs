@@ -11,10 +11,41 @@ namespace CoedicionExcel.Controllers
     public class ExcelController : Controller
     {
         private readonly AppDbContext _context;
+        private const int TIEMPO_TIMEOUT_EDICION_MINUTOS = 2;
 
         public ExcelController(AppDbContext context)
         {
             _context = context;
+        }
+
+        private bool LockFilaExpirado(FilaExcel fila)
+        {
+            if (!fila.EnEdicion || !fila.FechaEdicion.HasValue)
+                return false;
+
+            return fila.FechaEdicion.Value.AddMinutes(TIEMPO_TIMEOUT_EDICION_MINUTOS) < DateTime.Now;
+        }
+
+        private bool LockEncabezadoExpirado(DocumentoExcel documento)
+        {
+            if (!documento.EncabezadoEnEdicion || !documento.FechaEdicionEncabezado.HasValue)
+                return false;
+
+            return documento.FechaEdicionEncabezado.Value.AddMinutes(TIEMPO_TIMEOUT_EDICION_MINUTOS) < DateTime.Now;
+        }
+
+        private void LiberarLockFila(FilaExcel fila)
+        {
+            fila.EnEdicion = false;
+            fila.EditadoPor = null;
+            fila.FechaEdicion = null;
+        }
+
+        private void LiberarLockEncabezado(DocumentoExcel documento)
+        {
+            documento.EncabezadoEnEdicion = false;
+            documento.EncabezadoEditadoPor = null;
+            documento.FechaEdicionEncabezado = null;
         }
 
         public IActionResult Index()
@@ -124,6 +155,9 @@ namespace CoedicionExcel.Controllers
 
                 datos["filaId"] = filaBd.FilaId;
                 datos["versionFila"] = filaBd.VersionFila;
+
+                datos["enEdicion"] = filaBd.EnEdicion;
+                datos["editadoPor"] = filaBd.EditadoPor;
                 filas.Add(datos);
             }
 
@@ -565,6 +599,9 @@ namespace CoedicionExcel.Controllers
 
                 datos["filaId"] = filaBd.FilaId;
                 datos["versionFila"] = filaBd.VersionFila;
+
+                datos["enEdicion"] = filaBd.EnEdicion;
+                datos["editadoPor"] = filaBd.EditadoPor;
                 filas.Add(datos);
             }
 
@@ -575,6 +612,319 @@ namespace CoedicionExcel.Controllers
                 filas
             });
         }
+
+        // =============================
+        // BLOQUE 4 - ESTADO DE EDICIÓN
+        // =============================
+
+        [HttpPost]
+        public async Task<IActionResult> IniciarEdicionFila([FromBody] EstadoEdicionFilaRequest request)
+        {
+            if (request == null || request.FilaId <= 0 || string.IsNullOrWhiteSpace(request.Usuario))
+                return BadRequest(new { ok = false, mensaje = "Datos inválidos" });
+
+            var fila = await _context.FilasExcel
+                .FirstOrDefaultAsync(f => f.FilaId == request.FilaId && f.Activa);
+
+            if (fila == null)
+                return NotFound(new { ok = false, mensaje = "La fila no existe o ya fue eliminada" });
+
+            if (LockFilaExpirado(fila))
+            {
+                LiberarLockFila(fila);
+                await _context.SaveChangesAsync();
+            }
+
+            if (fila.EnEdicion)
+            {
+                if (string.Equals(fila.EditadoPor, request.Usuario, StringComparison.OrdinalIgnoreCase))
+                {
+                    fila.FechaEdicion = DateTime.Now;
+                    await _context.SaveChangesAsync();
+
+                    return Ok(new
+                    {
+                        ok = true,
+                        bloqueadoPorOtro = false,
+                        mensaje = "La fila sigue en edición por este usuario"
+                    });
+                }
+
+                return Conflict(new
+                {
+                    ok = false,
+                    bloqueadoPorOtro = true,
+                    mensaje = $"La fila está siendo editada por {fila.EditadoPor ?? "otro usuario"}",
+                    usuario = fila.EditadoPor
+                });
+            }
+
+            fila.EnEdicion = true;
+            fila.EditadoPor = request.Usuario.Trim();
+            fila.FechaEdicion = DateTime.Now;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                ok = true,
+                bloqueadoPorOtro = false,
+                mensaje = "Fila marcada en edición"
+            });
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> RenovarEdicionFila([FromBody] EstadoEdicionFilaRequest request)
+        {
+            if (request == null || request.FilaId <= 0 || string.IsNullOrWhiteSpace(request.Usuario))
+                return BadRequest(new { ok = false, mensaje = "Datos inválidos" });
+
+            var fila = await _context.FilasExcel
+                .FirstOrDefaultAsync(f => f.FilaId == request.FilaId && f.Activa);
+
+            if (fila == null)
+                return NotFound(new { ok = false, mensaje = "La fila no existe o ya fue eliminada" });
+
+            if (LockFilaExpirado(fila))
+            {
+                LiberarLockFila(fila);
+                await _context.SaveChangesAsync();
+
+                return Conflict(new
+                {
+                    ok = false,
+                    expirado = true,
+                    mensaje = "La edición de la fila expiró"
+                });
+            }
+
+            if (!fila.EnEdicion)
+            {
+                return Conflict(new
+                {
+                    ok = false,
+                    mensaje = "La fila ya no está en edición"
+                });
+            }
+
+            if (!string.Equals(fila.EditadoPor, request.Usuario, StringComparison.OrdinalIgnoreCase))
+            {
+                return Conflict(new
+                {
+                    ok = false,
+                    bloqueadoPorOtro = true,
+                    mensaje = $"La fila está siendo editada por {fila.EditadoPor ?? "otro usuario"}",
+                    usuario = fila.EditadoPor
+                });
+            }
+
+            fila.FechaEdicion = DateTime.Now;
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                ok = true,
+                mensaje = "Edición de fila renovada"
+            });
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> LiberarEdicionFila([FromBody] EstadoEdicionFilaRequest request)
+        {
+            if (request == null || request.FilaId <= 0 || string.IsNullOrWhiteSpace(request.Usuario))
+                return BadRequest(new { ok = false, mensaje = "Datos inválidos" });
+
+            var fila = await _context.FilasExcel
+                .FirstOrDefaultAsync(f => f.FilaId == request.FilaId && f.Activa);
+
+            if (fila == null)
+                return Ok(new { ok = true, mensaje = "La fila ya no existe, nada que liberar" });
+
+            if (LockFilaExpirado(fila))
+            {
+                LiberarLockFila(fila);
+                await _context.SaveChangesAsync();
+
+                return Ok(new { ok = true, mensaje = "La edición ya había expirado y fue liberada" });
+            }
+
+            if (!fila.EnEdicion)
+                return Ok(new { ok = true, mensaje = "La fila ya estaba libre" });
+
+            if (!string.Equals(fila.EditadoPor, request.Usuario, StringComparison.OrdinalIgnoreCase))
+            {
+                return Conflict(new
+                {
+                    ok = false,
+                    mensaje = $"No puedes liberar una fila que está siendo editada por {fila.EditadoPor ?? "otro usuario"}",
+                    usuario = fila.EditadoPor
+                });
+            }
+
+            LiberarLockFila(fila);
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                ok = true,
+                mensaje = "Edición de fila liberada"
+            });
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> IniciarEdicionEncabezado([FromBody] EstadoEdicionEncabezadoRequest request)
+        {
+            if (request == null || request.DocumentoId <= 0 || string.IsNullOrWhiteSpace(request.Usuario))
+                return BadRequest(new { ok = false, mensaje = "Datos inválidos" });
+
+            var documento = await _context.DocumentosExcel
+                .FirstOrDefaultAsync(d => d.DocumentoId == request.DocumentoId);
+
+            if (documento == null)
+                return NotFound(new { ok = false, mensaje = "Documento no encontrado" });
+
+            if (LockEncabezadoExpirado(documento))
+            {
+                LiberarLockEncabezado(documento);
+                await _context.SaveChangesAsync();
+            }
+
+            if (documento.EncabezadoEnEdicion)
+            {
+                if (string.Equals(documento.EncabezadoEditadoPor, request.Usuario, StringComparison.OrdinalIgnoreCase))
+                {
+                    documento.FechaEdicionEncabezado = DateTime.Now;
+                    await _context.SaveChangesAsync();
+
+                    return Ok(new
+                    {
+                        ok = true,
+                        bloqueadoPorOtro = false,
+                        mensaje = "El encabezado sigue en edición por este usuario"
+                    });
+                }
+
+                return Conflict(new
+                {
+                    ok = false,
+                    bloqueadoPorOtro = true,
+                    mensaje = $"Hay un encabezado en edición por {documento.EncabezadoEditadoPor ?? "otro usuario"}",
+                    usuario = documento.EncabezadoEditadoPor
+                });
+            }
+
+            documento.EncabezadoEnEdicion = true;
+            documento.EncabezadoEditadoPor = request.Usuario.Trim();
+            documento.FechaEdicionEncabezado = DateTime.Now;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                ok = true,
+                bloqueadoPorOtro = false,
+                mensaje = "Encabezado marcado en edición"
+            });
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> RenovarEdicionEncabezado([FromBody] EstadoEdicionEncabezadoRequest request)
+        {
+            if (request == null || request.DocumentoId <= 0 || string.IsNullOrWhiteSpace(request.Usuario))
+                return BadRequest(new { ok = false, mensaje = "Datos inválidos" });
+
+            var documento = await _context.DocumentosExcel
+                .FirstOrDefaultAsync(d => d.DocumentoId == request.DocumentoId);
+
+            if (documento == null)
+                return NotFound(new { ok = false, mensaje = "Documento no encontrado" });
+
+            if (LockEncabezadoExpirado(documento))
+            {
+                LiberarLockEncabezado(documento);
+                await _context.SaveChangesAsync();
+
+                return Conflict(new
+                {
+                    ok = false,
+                    expirado = true,
+                    mensaje = "La edición del encabezado expiró"
+                });
+            }
+
+            if (!documento.EncabezadoEnEdicion)
+            {
+                return Conflict(new
+                {
+                    ok = false,
+                    mensaje = "El encabezado ya no está en edición"
+                });
+            }
+
+            if (!string.Equals(documento.EncabezadoEditadoPor, request.Usuario, StringComparison.OrdinalIgnoreCase))
+            {
+                return Conflict(new
+                {
+                    ok = false,
+                    bloqueadoPorOtro = true,
+                    mensaje = $"Hay un encabezado en edición por {documento.EncabezadoEditadoPor ?? "otro usuario"}",
+                    usuario = documento.EncabezadoEditadoPor
+                });
+            }
+
+            documento.FechaEdicionEncabezado = DateTime.Now;
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                ok = true,
+                mensaje = "Edición de encabezado renovada"
+            });
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> LiberarEdicionEncabezado([FromBody] EstadoEdicionEncabezadoRequest request)
+        {
+            if (request == null || request.DocumentoId <= 0 || string.IsNullOrWhiteSpace(request.Usuario))
+                return BadRequest(new { ok = false, mensaje = "Datos inválidos" });
+
+            var documento = await _context.DocumentosExcel
+                .FirstOrDefaultAsync(d => d.DocumentoId == request.DocumentoId);
+
+            if (documento == null)
+                return Ok(new { ok = true, mensaje = "El documento ya no existe, nada que liberar" });
+
+            if (LockEncabezadoExpirado(documento))
+            {
+                LiberarLockEncabezado(documento);
+                await _context.SaveChangesAsync();
+
+                return Ok(new { ok = true, mensaje = "La edición del encabezado ya había expirado y fue liberada" });
+            }
+
+            if (!documento.EncabezadoEnEdicion)
+                return Ok(new { ok = true, mensaje = "El encabezado ya estaba libre" });
+
+            if (!string.Equals(documento.EncabezadoEditadoPor, request.Usuario, StringComparison.OrdinalIgnoreCase))
+            {
+                return Conflict(new
+                {
+                    ok = false,
+                    mensaje = $"No puedes liberar un encabezado que está siendo editado por {documento.EncabezadoEditadoPor ?? "otro usuario"}",
+                    usuario = documento.EncabezadoEditadoPor
+                });
+            }
+
+            LiberarLockEncabezado(documento);
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                ok = true,
+                mensaje = "Edición de encabezado liberada"
+            });
+        }
+ //FIN DE BLOQUE 4
 
         //Metodo para descargar Excel
         [HttpGet]
