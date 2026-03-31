@@ -393,7 +393,8 @@ namespace CoedicionExcel.Controllers
                 });
             }
 
-            var documento = await _context.DocumentosExcel.FindAsync(fila.DocumentoId);
+            var documento = await _context.DocumentosExcel
+                .FirstOrDefaultAsync(d => d.DocumentoId == fila.DocumentoId);
 
             if (documento == null)
             {
@@ -401,6 +402,40 @@ namespace CoedicionExcel.Controllers
                 {
                     conflicto = true,
                     mensaje = "El documento ya no está disponible. Se recargará la vista."
+                });
+            }
+
+            // Liberar lock de encabezado si expiró
+            if (LockEncabezadoExpirado(documento))
+            {
+                LiberarLockEncabezado(documento);
+                await _context.SaveChangesAsync();
+            }
+
+            // Si hay encabezado activo, no permitir eliminar fila
+            if (documento.EncabezadoEnEdicion)
+            {
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = $"No se puede eliminar la fila porque hay un encabezado en edición por {documento.EncabezadoEditadoPor ?? "otro usuario"}."
+                });
+            }
+
+            // Liberar lock de fila si expiró
+            if (LockFilaExpirado(fila))
+            {
+                LiberarLockFila(fila);
+                await _context.SaveChangesAsync();
+            }
+
+            // Si la fila sigue en edición, no permitir eliminar
+            if (fila.EnEdicion)
+            {
+                return Conflict(new
+                {
+                    conflicto = true,
+                    mensaje = $"No se puede eliminar la fila porque está en edición por {fila.EditadoPor ?? "otro usuario"}."
                 });
             }
 
