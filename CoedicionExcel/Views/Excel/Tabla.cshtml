@@ -233,7 +233,8 @@
         }
 
         versionActual = data.versionDocumentoNueva;
-        column.delete();
+        //column.delete();
+        location.reload();
     })
     .catch(() => alert("No se pudo eliminar la columna"));
                 },
@@ -515,7 +516,8 @@
         }
 
         versionActual = data.versionDocumentoNueva;
-        column.delete();
+        //column.delete();
+        location.reload();
     })
     .catch(() => alert("No se pudo eliminar la columna"))
             },
@@ -681,7 +683,7 @@
         });
 
         // AGREGAR COLUMNA
-                document.getElementById("btnAgregarColumna").addEventListener("click", function () {
+                    document.getElementById("btnAgregarColumna").addEventListener("click", function () {
         const nombre = prompt("Nombre columna:");
         if (!nombre) return;
 
@@ -694,13 +696,9 @@
             })
         })
         .then(r => r.json())
-        .then(col => {
-            tabla.addColumn({
-                title: col.nombre,
-                field: col.clave,
-                editor: "input"
-            }, true);
-        })
+            .then(col => {
+        location.reload();
+    })
         .catch(() => alert("Error columna"));
     });
 
